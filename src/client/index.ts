@@ -18,9 +18,15 @@
  *
  * Which session is current comes from the ui-session service. Its
  * `adapter.current` store resolves to `{ key, hooks, keyedHooks, props }`, i.e.
- * `props.sessionId` and `hooks.session`. A brand new conversation is
- * `hooks.session.blankBit === true` (`blank` belongs to another package's
- * projected summary and is not on this snapshot).
+ * `props.sessionId` and `hooks.session`.
+ *
+ * `hooks.session` is a `SessionFace` — `ISession & ObservableSnapshot<SessionSnapshot>`
+ * (see `@deepseek-ai/dsh-api-session-controller`) — so "this conversation has no
+ * turns yet" is `getSnapshot().blank`. Before DSH 0.2.0 the flag was a `blankBit`
+ * field sitting directly on the binding; 0.2.0 made that private and moved the
+ * flag onto the snapshot. The old read kept compiling and answered `undefined`,
+ * so the failure was silence rather than an error: "auto-play on a new
+ * conversation" simply stopped firing. Both shapes are read below.
  *
  * Browser policy, honestly: audio autoplay and the Fullscreen API both require a
  * user gesture, so the animation starts muted inside a fixed full-frame overlay
@@ -290,17 +296,55 @@ type CurrentStore = {
   subscribe: (listener: () => void) => () => void
 }
 
+/**
+ * The part of a `SessionFace` this plugin reads.
+ *
+ * DSH 0.2.0: `hooks.session` is `ISession & ObservableSnapshot<SessionSnapshot>`
+ * (see `@deepseek-ai/dsh-api-session-controller`), so "no turns yet" is
+ * `getSnapshot().blank`. Before 0.2.0 the flag was a `blankBit` field on the
+ * binding itself. A given host has one or the other, and reading the absent one
+ * is not an error — it answers `undefined`, which is how auto-play broke
+ * silently instead of loudly.
+ */
+type SessionFaceLike = {
+  getSnapshot?: () => { blank?: unknown } | null | undefined
+  subscribe?: (onChange: () => void) => unknown
+  blankBit?: unknown
+}
+
 /** Resolved ui-session binding as the built-in source publishes it. */
 type Binding = {
   key?: unknown
-  hooks?: {
-    session?: {
-      /** The snapshot's own "this conversation is still empty" flag. */
-      blankBit?: unknown
-    }
-  }
+  hooks?: { session?: SessionFaceLike }
   keyedHooks?: unknown
   props?: { sessionId?: unknown }
+}
+
+/**
+ * True when the current conversation still has no turns, from whichever shape
+ * the running host exposes.
+ *
+ * Exported so `scripts/verify-blank.mjs` can exercise THIS shipped function
+ * rather than a copy of it. The bug it guards against is a silent one — a field
+ * that moved answers `undefined` instead of throwing — so a test that only
+ * checks "the bundle built" would not have caught it.
+ */
+export function isBlankSession(session: SessionFaceLike | undefined): boolean {
+  if (session === null || session === undefined) return false
+  if (typeof session.getSnapshot === 'function') {
+    try {
+      const snapshot = session.getSnapshot()
+      // Trust the snapshot only when the key is actually present: a pre-0.2.0
+      // face may not carry it, and an `undefined` there must not shadow the
+      // legacy field.
+      if (snapshot !== null && typeof snapshot === 'object' && 'blank' in snapshot) {
+        return snapshot.blank === true
+      }
+    } catch {
+      /* a face that throws on read falls through to the legacy field */
+    }
+  }
+  return session.blankBit === true
 }
 
 const noopSubscribe = () => () => {}
@@ -314,8 +358,25 @@ function useCurrentSession(store: CurrentStore | null): {
     store === null ? noopSubscribe : store.subscribe,
     store === null ? () => null : store.getSnapshot,
   ) as Binding | null
+
+  const session = binding?.hooks?.session
+
+  // The face is itself an observable, so subscribe to it rather than sampling it
+  // once. A session is created blank and its snapshot can settle after the
+  // binding changes; judging it only on the render that changed `sessionId` made
+  // auto-play depend on which of two stores happened to settle first.
+  const subscribeBlank = useCallback(
+    (onChange: () => void): (() => void) => {
+      if (session === undefined || typeof session.subscribe !== 'function') return () => {}
+      const stop = session.subscribe(onChange)
+      return typeof stop === 'function' ? (stop as () => void) : () => {}
+    },
+    [session],
+  )
+  const isNewConversation = useSyncExternalStore(subscribeBlank, () => isBlankSession(session))
+
   const sessionId = typeof binding?.props?.sessionId === 'string' ? binding.props.sessionId : null
-  return { sessionId, isNewConversation: binding?.hooks?.session?.blankBit === true }
+  return { sessionId, isNewConversation }
 }
 
 function BootOverlay({
@@ -367,16 +428,20 @@ function BootOverlay({
     setShowing(true)
   }, [])
 
-  // Fire on every ENTRY into a conversation, not on every re-render.
+  // Fire on every ENTRY into a conversation. The blank case also fires when the
+  // flag ARRIVES, because it rides a nested snapshot: requiring the same render
+  // that changed `sessionId` would make auto-play depend on which of two stores
+  // settled first. `hasPlayed` still keeps it to once per conversation.
   useEffect(() => {
     if (sessionId === null) return
     const entered = lastSessionRef.current !== sessionId
     lastSessionRef.current = sessionId
-    if (!entered) return
 
     const pinned = readPinned()
     if (pinned !== null && pinned === sessionId) {
-      // The designated conversation: every time it is opened.
+      // The designated conversation: every time it is opened, so entry is the
+      // whole trigger here.
+      if (!entered) return
       log('pinned session opened', sessionId)
       open()
       return

@@ -218,8 +218,14 @@ ffprobe -v trace 修好的.mp4 2>&1 | grep -m1 moov   # 偏移应该很小
 - 当前会话来自 `ctx.uiSession.adapter.current` 这个 React 友好的 store。
   **它的快照不是会话记录**，而是解析后的描述符产物
   `{ key, hooks, keyedHooks, props }` —— 会话 id 在 `props.sessionId`，会话快照在 `hooks.session`
-- 「这是个全新对话」的字段是 **`blankBit`**（`hooks.session.blankBit`）。
-  `session.blank` 属于别的包的投影对象，不在这个快照上
+- **「这是个全新对话」的字段，DSH 0.2.0 起改了位置**：`hooks.session` 现在是
+  `SessionFace`（`ISession & ObservableSnapshot<SessionSnapshot>`），空白标志在
+  **`getSnapshot().blank`**；0.2.0 之前它是直接挂在 binding 上的 `blankBit`，而
+  0.2.0 把它变成了 `private`。
+  这两个字段都读（新优先），并且**订阅那个 face 本身**而不是采样一次 ——
+  旧写法的问题不是报错而是**沉默**：读一个不存在的字段得到 `undefined`，
+  判断恒为假，于是「新对话自动播放」悄悄失效。同理，触发也不要求
+  "必须是切换会话的那一次渲染"，否则会取决于两个 store 谁先落定。
 - 「每次点开都播」实现为**监听进入会话**这个动作，而不是记"播过没有"，
   所以被钉的会话不受"已看过"记录限制
 - 视频路由支持 **Range**（浏览器对媒体会发 Range；该给 206 却给 200 时有些播放器会拒绝播放）
