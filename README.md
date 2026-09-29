@@ -215,6 +215,25 @@ ffprobe -v trace 修好的.mp4 2>&1 | grep -m1 moov   # 偏移应该很小
 
 - 挂载点：`shell.overlay`（帧级浮动层，`kind: list`，新增一格不顶替官方 UI）+
   `sidebar.footer.action`（页脚那个图钉和 🎛 片库入口）
+- **这个插件绝对不能用静态 `inject`** —— 这是踩过的坑，别改回去。
+  客户端加载器把**任何不是 `active` 的条目**都当成致命错误：
+
+  ```js
+  if (u !== "active") if (u === "pending") { … }
+  if (o.length > 0) throw new Error(`web boot: ${o.length} entry did not activate …`)
+  ```
+
+  静态 `inject` 一旦有宿主给不出的服务，本插件 fiber 就**永远 pending**，
+  于是**整个 GUI 打不开**。实测事故原文：
+
+  ```
+  web boot: 1 entry did not activate dsh-boot-animation: pending (waiting for service: uisession)
+  ```
+
+  所以两个服务都用 cordis 的**动态注入** `ctx.inject(['slots','uiSession'], cb)`
+  —— 等待发生在**子 fiber**，我们自己的条目照常 `active`。宿主给不出时插件静默闲置，
+  这对一个装饰性插件才是正确的失败方式。
+  `scripts/verify-client-boot.mjs` 专门断言"产物里没有静态 `inject`"，并覆盖四种服务情形。
 - 当前会话来自 `ctx.uiSession.adapter.current` 这个 React 友好的 store。
   **它的快照不是会话记录**，而是解析后的描述符产物
   `{ key, hooks, keyedHooks, props }` —— 会话 id 在 `props.sessionId`，会话快照在 `hooks.session`

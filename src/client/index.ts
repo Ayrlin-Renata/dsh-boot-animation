@@ -36,8 +36,26 @@
 import type { ReactElement } from 'react'
 import { createElement as h, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
-/** Slot service for both seats, ui-session for the current conversation. */
-export const inject = ['slots', 'uiSession']
+/**
+ * NO static `inject` — deliberately, and this is the whole point of the file's
+ * shape.
+ *
+ * A static dependency the host cannot satisfy leaves this plugin's fiber
+ * PENDING forever, and the web boot treats ANY entry that is not `active` as
+ * fatal — it throws `web boot: N entry did not activate` and the entire GUI
+ * fails to load. That happened in the field: a host without the `uiSession`
+ * service reported
+ *
+ *   dsh-boot-animation: pending (waiting for service: uisession)
+ *
+ * and the user could not open the harness at all. A cosmetic intro animation
+ * must never be able to cost someone their harness.
+ *
+ * Both services are resolved dynamically in `apply` instead: the entry activates
+ * immediately, and the UI mounts as soon as they exist. On a host that never
+ * provides them this plugin silently does nothing, which is the correct failure
+ * mode for an add-on like this one.
+ */
 
 /**
  * Plays the active clip.
@@ -867,6 +885,13 @@ type ClientContext = {
   }
   uiSession?: { adapter?: { current?: CurrentStore } }
   effect?: (callback: () => unknown, label?: string) => unknown
+  /**
+   * cordis's dynamic injection, `Context.inject(deps, callback)`: the wait
+   * happens in a CHILD fiber, so our own entry still reaches `active`. That is
+   * the difference between "this plugin has nothing to attach to" and "the whole
+   * web boot fails".
+   */
+  inject?: (deps: string[], callback: (ready: ClientContext) => unknown) => unknown
 }
 
 /**
@@ -889,73 +914,92 @@ function openLibrary(): void {
 }
 
 export function apply(ctx: ClientContext): void {
-  const candidate = ctx.uiSession?.adapter?.current
-  const store =
-    candidate !== undefined &&
-    typeof candidate.getSnapshot === 'function' &&
-    typeof candidate.subscribe === 'function'
-      ? candidate
-      : null
-  log('apply', { hasUiSession: ctx.uiSession !== undefined, hasStore: store !== null })
+  /** Mount both seats, once the services this needs are actually present. */
+  const mount = (ready: ClientContext, store: CurrentStore | null) => {
+    // Rendering a JSX-free tree on purpose (createElement), so no provider
+    // element is involved. Hooks live in AppRoot, never in apply: apply is called
+    // by the plugin loader, not by React, and a hook call there would throw.
+    const AppRoot = () => {
+      const [libOpen, setLibOpen] = useState(false)
+      // Bumped on preview. Closing the library and bumping in the same handler
+      // is what makes it work: BootOverlay only exists while the library is closed.
+      const [previewAt, setPreviewAt] = useState(0)
 
-  // Warm the media cache before any overlay can open, so the first play starts
-  // from the local copy instead of the network. Deliberately here, not at the
-  // trigger: the version has to be known before a src is built.
-  resolveActiveVersion()
+      const openSelf = useCallback(() => setLibOpen(true), [])
+      useEffect(() => {
+        libraryOpeners.add(openSelf)
+        return () => {
+          libraryOpeners.delete(openSelf)
+        }
+      }, [openSelf])
 
-  // Rendering a JSX-free tree on purpose (createElement), so no provider
-  // element is involved. Hooks live in AppRoot, never in apply: apply is called
-  // by the plugin loader, not by React, and a hook call there would throw.
-  const AppRoot = () => {
-    const [libOpen, setLibOpen] = useState(false)
-    // Bumped on preview. Closing the library and bumping in the same handler is
-    // what makes it work: BootOverlay only exists while the library is closed.
-    const [previewAt, setPreviewAt] = useState(0)
-
-    const openSelf = useCallback(() => setLibOpen(true), [])
-    useEffect(() => {
-      libraryOpeners.add(openSelf)
-      return () => {
-        libraryOpeners.delete(openSelf)
+      // Rendered as ELEMENTS, never called as plain functions. Calling a
+      // component directly would run its hooks against AppRoot's own hook list,
+      // so toggling the library would change AppRoot's hook count between renders
+      // and React would throw "Rendered more hooks than during the previous
+      // render" the moment the picker opened.
+      //
+      // No `activeId` state lives here: the overlay always loads VIDEO_URL and the
+      // host resolves which clip that is per request, so a switch is picked up on
+      // the next open without threading an id into the src mid-playback.
+      if (libOpen) {
+        return h(VideoLibrary, {
+          onClose: () => setLibOpen(false),
+          onPreview: () => {
+            setLibOpen(false)
+            setPreviewAt((n) => n + 1)
+          },
+        })
       }
-    }, [openSelf])
-
-    // Rendered as ELEMENTS, never called as plain functions. Calling a
-    // component directly would run its hooks against AppRoot's own hook list,
-    // so toggling the library would change AppRoot's hook count between renders
-    // and React would throw "Rendered more hooks than during the previous
-    // render" the moment the picker opened.
-    //
-    // No `activeId` state lives here: the overlay always loads VIDEO_URL and the
-    // host resolves which clip that is per request, so a switch is picked up on
-    // the next open without threading an id into the src mid-playback.
-    if (libOpen) {
-      return h(VideoLibrary, {
-        onClose: () => setLibOpen(false),
-        onPreview: () => {
-          setLibOpen(false)
-          setPreviewAt((n) => n + 1)
-        },
-      })
+      return h(BootOverlay, { store, previewAt })
     }
-    return h(BootOverlay, { store, previewAt })
+
+    const Pin = () => h(PinAction, { store, onOpen: () => openLibrary() })
+
+    const register = () => {
+      // Slot names are inlined on purpose: the injector's pre-flight check reads
+      // register() calls statically and cannot follow a constant.
+      ready.slots.inject('shell.overlay', () =>
+        ready.slots.register({ name: 'shell.overlay', id: 'dsh-boot-animation', order: 900 }, AppRoot),
+      )
+      ready.slots.inject('sidebar.footer.action', () =>
+        ready.slots.register(
+          { name: 'sidebar.footer.action', id: 'dsh-boot-animation-pin', order: 40, label: () => '片头动画' },
+          Pin,
+        ),
+      )
+    }
+    if (typeof ready.effect === 'function') ready.effect(register, 'dsh-boot-animation: mounts')
+    else register()
   }
 
-  const Pin = () => h(PinAction, { store, onOpen: () => openLibrary() })
+  const wire = (ready: ClientContext) => {
+    const candidate = ready.uiSession?.adapter?.current
+    const store =
+      candidate !== undefined &&
+      typeof candidate.getSnapshot === 'function' &&
+      typeof candidate.subscribe === 'function'
+        ? candidate
+        : null
+    log('services ready', { hasUiSession: ready.uiSession !== undefined, hasStore: store !== null })
 
-  // Slot names are inlined on purpose: the injector's pre-flight check reads
-  // register() calls statically and cannot follow a constant.
-  const mount = () => {
-    ctx.slots.inject('shell.overlay', () =>
-      ctx.slots.register({ name: 'shell.overlay', id: 'dsh-boot-animation', order: 900 }, AppRoot),
-    )
-    ctx.slots.inject('sidebar.footer.action', () =>
-      ctx.slots.register(
-        { name: 'sidebar.footer.action', id: 'dsh-boot-animation-pin', order: 40, label: () => '片头动画' },
-        Pin,
-      ),
-    )
+    // Warm the media cache before any overlay can open, so the first play starts
+    // from the local copy instead of the network. Deliberately here and not at
+    // module load: a host that cannot mount this plugin should not pay for a
+    // multi-megabyte prefetch it will never use.
+    resolveActiveVersion()
+
+    mount(ready, store)
   }
-  if (typeof ctx.effect === 'function') ctx.effect(mount, 'dsh-boot-animation: mounts')
-  else mount()
+
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['slots', 'uiSession'], wire)
+    return
+  }
+
+  // A host without dynamic injection. Mounting eagerly is only safe when the
+  // services are already there; otherwise this plugin stays idle rather than
+  // risking the pending-forever state that takes the whole GUI down.
+  if (ctx.slots !== undefined && ctx.uiSession !== undefined) wire(ctx)
+  else notify('idle: host offers no dynamic injection and no uiSession')
 }
