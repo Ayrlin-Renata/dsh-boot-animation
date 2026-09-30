@@ -52,6 +52,28 @@ DSH 的客户端 bundle 响应带 `cache-control: max-age=31536000, immutable`�
 > 注意：如果刚启动时你的活动主面板不是「对话」（比如停在某个插件的面板上），
 > 当前会话还不存在，图钉是禁用状态。先打开一个对话即可。
 
+### 只给某一个会话换片头（0.4.0 新增）
+
+上面那个 🎞 图钉管的是「**什么时候播**」；如果你要管「**这个会话播哪一段**」，
+用片库里的 **「仅本会话」**：
+
+1. 打开那个会话
+2. 点页脚 **🎛** 打开片头片库
+3. 在你想播的那一行点 **「仅本会话」**
+
+那一行会变成蓝底并挂上「本会话」徽章，面板顶部也会写明「本会话固定播放：xxx」，
+旁边有 **「取消（回到全局）」**。之后**只有这个会话**播这一段 ——
+其它会话、以及你在别处选的那一段，都不受影响。
+「选它」改的是**全局**，「仅本会话」改的是**这一个会话**，两者互不覆盖。
+
+优先级：**会话覆盖 → 随机 → 全局选择 → 环境变量 → `intro.mp4` → `videos/` → 内嵌内置片**。
+会话覆盖连「随机播放」也压得住 —— 把一个会话钉住之后又被随手塞一段随机片，
+那不是"钉住"的意思；但显式请求随机的调用（`mode=random`）仍然不被覆盖。
+
+> 指的那一段被删掉或移走时，这个会话**回落到全局**而不是黑屏，并在 diagnostics 里
+> 记一条 `conversation-override-stale`；文件回来了这条钉住自动生效
+> （不会因为一次失联就被清掉）。
+
 ## 换自己的视频（片库）
 
 插件现在是一个**片库**，不是单个槽位：它会把所有能找到的视频都列出来，你选一个，选择会被记住。
@@ -104,10 +126,14 @@ PSNR 44–48 dB —— 这是「肉眼看不出差别」的区间。原片另存
 
 | 元素 | 作用 |
 |---|---|
-| ✓ 标记 | 当前生效的那一条 |
+| ✓ 标记 | 当前生效的那一条（全局选择） |
 | 来源徽章 | `你自己加的` / `插件自带` / `内置原始` / `环境变量` |
 | 文件大小 | 帮你确认换对了没有 |
-| **▶ 预览当前** | **立刻播放当前选中的那段**，不用等下一次触发（见下） |
+| **▶ 预览** | **立刻播放这一行**，不改你的任何选择 |
+| **选它** | 把它设为**全局**片头（以后开片头都播它） |
+| **仅本会话** | **只让当前这个会话**播它，不动全局选择（见上） |
+| `本会话` 徽章 | 这一行是这个会话固定播放的那段 |
+| 面板顶部的本会话条 | 本会话当前固定播放哪一段，带「取消（回到全局）」 |
 | 刷新 | 刚往文件夹里丢完文件，点它重新扫描 |
 | `原片源` 徽章 | 历史上那个 `intro.mp4` 落点，仍然优先 |
 | ⚠ 未优化 徽章 | 该文件的索引表 `moov` 在末尾，建议重排（见下） |
@@ -153,6 +179,7 @@ host 半侧按这个顺序解析，**每次请求都重新解析**（换片子�
 
 | 顺序 | 位置 |
 |---|---|
+| 0 | **当前会话的覆盖**（`selection.json` 的 `conversationOverrides`；只有带 `?session=` 的请求会看这一层） |
 | 1 | `~/.dsh/boot-animation/selection.json` 里选中的那个 id（片库面板写的） |
 | 2 | 环境变量 `DSH_BOOT_ANIMATION` 指向的文件 |
 | 3 | `~/.dsh/boot-animation/intro.mp4`（历史落点，仍优先于片库里的其他文件） |
@@ -172,6 +199,18 @@ cp 我的片子.mp4 ~/.dsh/boot-animation/intro.mp4
 curl http://127.0.0.1:3080/dsh-boot-animation/status.json
 curl http://127.0.0.1:3080/dsh-boot-animation/videos.json
 ```
+
+看**某个会话**会播哪一段，以及把某个会话钉到某一段（`id: null` 取消）：
+
+```sh
+curl "http://127.0.0.1:3080/dsh-boot-animation/resolve.json?mode=active&session=<会话id>"
+
+curl -X POST http://127.0.0.1:3080/dsh-boot-animation/select \
+  -H 'content-type: application/json' \
+  -d '{"scope":"conversation","sessionId":"<会话id>","id":"builtin:cyberpunk"}'
+```
+
+不带 `?session=` 时，每一个回答都和 0.3.0 逐字节一致。
 
 ### 排错：视频是黑的 / 放着放着没了
 
@@ -208,6 +247,8 @@ ffprobe -v trace 修好的.mp4 2>&1 | grep -m1 moov   # 偏移应该很小
 | 钉住了也不播 | 确认图钉是绿色；确认打开的就是被钉的那个会话 |
 | 黑屏无画面 | 先看 moov 是否前置（见上「排错：视频是黑的」）；再访问 `/dsh-boot-animation/status.json` 看片源；最后看浏览器控制台有没有解码错误 |
 | 换了片没生效 | 片库里点完要有 ✓ 才生效；确认文件在 `videos/` 里并点了「刷新」 |
+| 只有一个会话播的不是你选的 | 那个会话可能有「仅本会话」覆盖：打开片库看顶部那条，点「取消（回到全局）」 |
+| 某个会话的固定片头突然没了 | 它指的片段被移走或删除了 —— 该会话已回落到全局；`status.json` 里能看到 `conversation-override-stale` |
 | 播到一半自己没了 | 25 秒看门狗（`STALL_TIMEOUT_MS`）超时 —— 通常还是 faststart 或解码太慢 |
 | 想看到插件在干什么 | 把 `src/client/index.ts` 顶部的 `DEBUG` 改成 `true` 重新构建，控制台会打印每次决策 |
 
@@ -255,8 +296,19 @@ ffprobe -v trace 修好的.mp4 2>&1 | grep -m1 moov   # 偏移应该很小
 - **hook 只能在组件里调**：`apply()` 是插件加载器调的，不是 React 调的，所以状态
   全部住在 `AppRoot` 组件内。片库入口在图钉那个 slot、对话框在 overlay 那个 slot，
   是两个独立的 React 根，用模块级 `libraryOpeners` 订阅集合桥接
-- 片库的路由：`videos.json`（列）、`media/<id>`（按 id 流）、`select`（POST 写选择）、
-  `boot.mp4`（老路由，服务当前生效的那条，向后兼容）
+- 片库的路由：`videos.json`（列）、`media/<id>`（按 id 流）、`select`（POST 写选择或钉会话）、
+  `resolve.json`（"现在播谁"）、`boot.mp4`（老路由，302 到具体片段，向后兼容）
+- **按会话覆盖是主机的一层，不是客户端的一层**：`resolveActive(sessionId)` 把
+  `conversationOverrides[sessionId]` 排在最前面，客户端只把 session 带上（`?session=`）——
+  优先级链因此仍然只有一份实现。`mode=random` 是唯一绕过它的入口，因为那是调用方
+  **指名**要随机；`mode=active` / `mode=selected` 都认这一层
+- `conversationOverrides` 放进 `selection.json`（v3）而不是另开一个文件：它就是用户选择，
+  而这个 store 是插件里唯一知道怎么原子写、怎么自愈损坏文件的地方，另开一个文件
+  等于把那两件事再抄一遍。键值两侧的校验和 `selectedClipId` 完全一样（路径一律被拒），
+  所以手改文件也无法从这张表里塞进媒体路径；表有上限（200），淘汰**最久没被设置**的那个
+- `videos.json` / `status.json` **只公布发问那个会话的** `conversationClipId`，
+  从不把整张表发给浏览器 —— 一个把用户钉过的每个会话 id 都吐出去的端点，
+  比一个只回答被问到的问题的端点差得多
 - 内嵌片段的 id 是 `builtin:<name>`，与路径派生的 id 不会撞；它们的 ETag 用自身的
   内容哈希（`"embedded-<sha256前16位>"`），所以重校验是精确的、不依赖 stat
 - **同一个视频在多个位置时按内容去重**（sha256；文件侧按 size+mtime 缓存哈希结果），
@@ -270,8 +322,9 @@ ffprobe -v trace 修好的.mp4 2>&1 | grep -m1 moov   # 偏移应该很小
 | 命令 | 作用 |
 |---|---|
 | `npm run verify:routes` | 用**服务器自己的匹配规则**驱动真实 handler，断言每条路由 |
+| `npm run verify:conversation` | 按会话覆盖的完整行为：只对自己生效、不碰全局选择、压过随机但不压过 `mode=random`、片段失效时回落并记录、只公布发问者的钉住、校验与上限 |
 | `npm run verify:letterbox` | 用 CDP 驱动本机 Edge，量出所选贴合方式实际留多少黑边 |
-| `npm run check` | 上面两个 + CSS 模板反引号检查 |
+| `npm run check` | 上面全部 15 组（build / routes / selection / conversation / cache / blank / boot / preview / playback / random / fallback / install / teardown / version-refresh / session-id） |
 | `npm run build:client` | 先跑 CSS 检查再构建（防带病构建） |
 
 两个脚本都是被真实 bug 逼出来的，各自都有过一次"用自己的规则测自己"的教训：
@@ -284,5 +337,4 @@ ffprobe -v trace 修好的.mp4 2>&1 | grep -m1 moov   # 偏移应该很小
 
 ## 许可
 
-BSD-3-Clause，见 [LICENSE](LICENSE)。包内的 `assets/boot.mp4` 与 `videos/` 下的
-默认片源以相同条款分发。
+BSD-3-Clause，见 [LICENSE](LICENSE)。包内 `lib/clips.data.js` 里的内嵌片源以相同条款分发。

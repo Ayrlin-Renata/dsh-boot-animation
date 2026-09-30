@@ -5,6 +5,49 @@
 > Changes that a user can see, one section per release. English one-liners are
 > included so an English reader can scan the list.
 
+## 0.4.0 — 2026-09-30
+
+**新增：按会话固定片头 —— 全局选择之外再加一层，只对某一个会话生效**
+*New: pin one conversation to one clip, on top of the global choice.*
+
+来自 issue #3（@windyduan）的方向。只做了**会话级**，没有做 project 级：当前宿主对
+project 身份的暴露不稳定，按提案里自己那条"拿不到信息就降级"的边界，加那一层只会
+变成一堆兼容分支。
+
+- 片库每行多一个按钮 **「仅本会话」**：只让当前这个会话播这一段。那一行变蓝并挂
+  「本会话」徽章，面板顶部写明本会话固定播放哪一段，旁边是「取消（回到全局）」。
+  「选它」改的是全局，「仅本会话」改的是这一个会话，两者互不覆盖。
+- 优先级：**会话覆盖 → 随机 → 全局选择 → 环境变量 → `intro.mp4` → `videos/` → 内嵌内置片**。
+  会话覆盖连"随机播放"也压得住 —— 钉住一个会话之后又被随手塞一段随机片，那不是
+  "钉住"的意思；但显式 `mode=random` 仍然不被覆盖（那是调用方指名要随机）。
+- 覆盖层进 `selection.json`（schema **v3**，新增 `conversationOverrides`），与全局选择
+  同一个文件、同一套原子写与损坏自愈；v2 文件自动迁移（补一个空层）。键值两侧都按和
+  全局选择一样的规则校验：**路径、`active` 别名、非字符串一律丢弃**，手改文件也无法
+  从这张表塞进媒体路径。
+- 表有上限（200），淘汰的是**最久没被设置**的会话而非任意一条；重新设置某个会话会把
+  它移到最近使用的位置。
+- 钉住指向的片段被移走/删除时**回落常规链**并记 `conversation-override-stale` ——
+  绝不报错、绝不黑屏，也**不删除那条钉住**（文件回来就自动复活）。
+- 只有**发问的那个会话**能知道自己的钉住：`videos.json` / `status.json` 只公布
+  `conversationClipId`（连同 `conversationOverrideCount`、`sessionKnown`），
+  绝不把整张表发给浏览器。
+- **向后兼容**：不带 `?session=` 时每个回答都与 0.3.0 逐字节一致；`POST /select {id}`、
+  `mode=active|random|selected` 的语义都没变。
+
+接口：
+- `GET /resolve.json?mode=active&session=<id>` —— 会话感知的"现在播谁"
+- `GET /videos.json?session=<id>` / `GET /status.json?session=<id>` —— 带上本会话的 `conversationClipId`
+- `POST /select {scope:'conversation', sessionId, id}` —— 钉住；`id: null` 取消
+
+工程与测试：
+
+- 新增 `verify:conversation`（70 项断言）：真实路由 + 真实构建产物，覆盖"只对自己生效 /
+  不碰全局 / 压过随机但不压过 `mode=random` / 片段失效回落 / 不泄露其它会话 / 校验与上限"。
+- `verify:selection` 跟随 schema v3 更新（新增 v2→v3 迁移与"路径无法经覆盖表混入"的断言）。
+- `npm run check` 现为 **15 组**；`lib/` 已按新源码重新构建。
+- 顺手修掉文档里已经过期的 `assets/boot.mp4` 描述（两处 README 与 LICENSE 的许可段落）——
+  那段片源早已内嵌进 `lib/clips.data.js`，包内既没有 `assets/` 也不随包发 `videos/`。
+
 ## 0.3.0 — 2026-09-29
 
 **架构级重构：一个片段一个 ClipId、一条播放路径、一个数据源**

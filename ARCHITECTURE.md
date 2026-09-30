@@ -85,19 +85,29 @@ dsh-boot-animation: pending (waiting for service: uisession)
 `$DSH_HOME/boot-animation/selection.json`，**只放设置，不放媒体路径**：
 
 ```json
-{ "version": 2, "selectedClipId": "builtin:brand",
-  "randomPlayback": false, "fitMode": "cover" }
+{ "version": 3, "selectedClipId": "builtin:brand",
+  "randomPlayback": false, "fitMode": "cover",
+  "conversationOverrides": { "session-abc": "builtin:cyberpunk" } }
 ```
 
 ```
 read:    缓存(按 size@mtime 签名) → JSON.parse → migrate() → 需要时回写
-migrate: 纯函数。{id} (v1) / 无版本号 / 未知版本 / null / 数组 / 字符串 → 合法 v2
+migrate: 纯函数。{id} (v1) / 无版本号 / v2 / 未知版本 / null / 数组 / 字符串 → 合法 v3
          路径形状的值被 normalizeClipId 拒绝 → selectedClipId = null
 损坏:    解析失败 → 用默认值 + 写回修复 + diagnostics 记 selection-unreadable/selection-reset
 write:   只接受 selectedClipId/randomPlayback/fitMode；未知字段抛 ClipError
 ```
 
 读取永不抛异常：选择文件坏掉只能导致"用户的挑选被忘记"，不能导致插件起不来。
+
+`conversationOverrides` 是**按会话**的那一层（0.4.0）：一个会话钉住一个片段，盖在全局选择
+之上。它放在同一个文件里，因为它是同一类东西 —— 用户的选择 —— 而 `SelectionStore` 是插件
+里唯一知道怎么原子写、怎么自愈损坏文件的地方；另开一个文件等于把那两件事再抄一遍。
+键（session id）和值（ClipId）都按和全局选择一样的规则校验，所以**手改文件也无法从这张表
+里塞进媒体路径**。表有上限（`MAX_CONVERSATION_OVERRIDES` = 200），淘汰**最久没被设置**的
+那个（重新设置会把键移到末尾，所以"常用的那个"不会被淘汰）。写入走
+`setConversationOverride()` 而不是 `write()`：一张表的 patch 语言要么是"整体替换"
+（调用方可以悄悄抹掉别人钉的会话），要么是"改一个键" —— 而只有后者是被需要的。
 
 ## 4. Preview lifecycle
 
@@ -123,8 +133,9 @@ playback.clipId            播放器此刻指向的片段
 
 ```
 trigger
-  → 需要"现在该播谁"时问主机 GET /resolve.json?mode=active|random|selected
+  → 需要"现在该播谁"时问主机 GET /resolve.json?mode=active|random|selected[&session=<会话id>]
         （主机 ClipResolver 回答；随机也在主机决策，见 §8）
+        （会话覆盖是链上的第一层，见 §3；客户端只负责把 session 带上）
   → 已知 clipId（如预览）则直接用
   → ClientStore.playClip(clipId, reason)
         url = /dsh-boot-animation/media/<ClipId>?v=<该片段自己的 version>
@@ -212,8 +223,11 @@ Range：`206` + `content-range` + `accept-ranges`；后缀式、开区间、不�
 | 旧行为 | 现在 |
 |---|---|
 | `GET /boot.mp4` 直接给字节 | **302** 到 `/media/<activeClipId>?v=…`（老客户端照样能播，但拿到的是唯一地址） |
-| `POST /select` body `{id}` | 仍然接受（等价于 `selectedClipId`） |
-| `selection.json` `{id, at}` | 读取时迁移到 v2；`at` 丢弃；路径形状的值丢弃 |
+| `POST /select` body `{id}` | 仍然接受（等价于 `selectedClipId`）；新增 `{scope:'conversation',…}`，**不带 scope 的路径逐字节不变** |
+| `GET /resolve.json?mode=…` | 原样；新增**可选** `?session=<id>`，不带时等价于从前 |
+| `selection.json` `{id, at}` / v2 | 读取时迁移到 v3；v2 补一个空的 `conversationOverrides`；`at` 丢弃；路径形状的值丢弃 |
+| `videos.json` 的 `activeId/activeVersion/videos[].id` | 原样保留，另加新字段 |
+| `videos.json` / `status.json` | 原样，另加 `conversationClipId` / `conversationOverrideCount` / `sessionKnown` |
 | `$DSH_HOME/boot-animation/intro.mp4` | 仍在优先级链里（`legacy-dropin`） |
 | `DSH_BOOT_ANIMATION=<路径>` | 仍生效，且该文件会被 `adopt` 成可寻址的片段 |
 | `videos.json` 的 `activeId/activeVersion/videos[].id` | 原样保留，另加新字段 |
@@ -238,3 +252,9 @@ Range：`206` + `content-range` + `accept-ranges`；后缀式、开区间、不�
 8. 初始化分层：主机 apply 无 I/O；registry 懒扫描；媒体懒解码且**只解被请求的那一个**。
 9. 选择文件损坏 → 修复并继续，绝不启动失败。
 10. 媒体/片段错误不得升级为插件错误；DSH GUI 与主机的其它部分不受影响。
+11. 会话覆盖是**主机**的一层：客户端只带 session（`?session=`），不得自己实现优先级链。
+12. 会话覆盖**不得**写进 `selectedClipId`，一次会话写也**不得**覆盖全局选择；
+    `mode=random` 是唯一绕过会话覆盖的入口（那是调用方指名要随机）。
+13. 只公布**发问那个会话**的钉住；整张 `conversationOverrides` 不出主机。
+14. 钉住指向的片段不可用时**回落常规链**并记事件 —— 绝不报错、绝不黑屏、
+    也绝不把那条钉住删掉（文件回来时它自动复活）。

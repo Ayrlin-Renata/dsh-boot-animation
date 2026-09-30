@@ -53,6 +53,31 @@ switching away and back, or reloading. Click again to unpin.
 > panel is showing), there is no current conversation yet and the pin is disabled.
 > Open a conversation first.
 
+### Pin ONE conversation to ONE clip (0.4.0)
+
+The 🎞 pin above decides **when** the animation plays. To decide **which clip a
+given conversation plays**, use **「仅本会话」** (*this conversation only*) in the picker:
+
+1. Open that conversation
+2. Click **🎛** at the sidebar foot to open the clip library
+3. Click **「仅本会话」** on the row you want
+
+That row turns blue and gains a 「本会话」 badge; the top of the panel names the clip
+this conversation is fixed to and offers 「取消（回到全局）」 next to it. Only that
+conversation plays it — every other conversation, and the global choice you made
+elsewhere, are untouched. 「选它」 changes the **global** choice; 「仅本会话」 changes
+**this one conversation**. Neither overwrites the other.
+
+Priority: **conversation override → random → global selection → env → `intro.mp4` →
+`videos/` → embedded built-ins**. A conversation pin outranks random playback —
+pinning a conversation and then being handed a random clip is not what pinning
+means — but an explicit `mode=random` request is never overridden.
+
+> If the clip a conversation points at is deleted or moved, that conversation **falls
+> back to the global choice** instead of going black, and records
+> `conversation-override-stale`; when the file comes back the pin applies again
+> (one absence never deletes it).
+
 ## Built-in clips and your own video
 
 The plugin is a **library**, not a single slot: it lists every clip it can find,
@@ -112,6 +137,8 @@ black screen.
 | New conversation does not play | That conversation already played it (once per conversation). Pin it to replay every time |
 | Pinned but still nothing | Check the pin is green, and that you opened the pinned conversation |
 | Black screen | Open `/dsh-boot-animation/status.json` to see whether a source was found; check the console for a decode error |
+| One conversation plays the wrong clip | That conversation may carry a 「仅本会话」 pin: open the picker and press 「取消（回到全局）」 at the top |
+| A conversation's pinned clip vanished | The clip it named was moved or deleted — that conversation fell back to the global choice; `status.json` shows `conversation-override-stale` |
 | Want to see the decisions | Set `DEBUG = true` at the top of `src/client/index.ts`, rebuild, watch the console |
 
 ## Implementation notes
@@ -131,5 +158,5 @@ black screen.
 
 ## License
 
-BSD-3-Clause, see [LICENSE](LICENSE). The bundled `assets/boot.mp4` ships under
-the same terms.
+BSD-3-Clause, see [LICENSE](LICENSE). The clips embedded in `lib/clips.data.js`
+ship under the same terms.
