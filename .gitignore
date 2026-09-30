@@ -7,3 +7,7 @@ boot.mp4.original-backup
 
 # 构建日志
 build-log.txt
+
+# 本 fork 的构建暂存目录：scripts/i18n.mjs 在这里生成英文版 src/client 副本。
+# 每次构建都会先清空重建，不应提交。
+/build/

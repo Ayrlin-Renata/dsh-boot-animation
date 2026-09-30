@@ -1,7 +1,14 @@
 import { fileURLToPath } from 'node:url'
 import type { UserConfig } from 'tsdown'
+import { CLIENT_ENTRY, stageClient } from './scripts/i18n.mjs'
 
 const PLUGIN_ID = "dsh-boot-animation"
+
+// Fork-owned: generate the English copy of src/client that we actually compile.
+// src/ itself is never modified, so `git merge upstream/main` stays clean.
+// See FORK.md. Throws if a string is missing a translation, so a mixed-language
+// build cannot ship by accident.
+stageClient()
 
 const CLIENT_EXTERNALS = [
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
@@ -11,7 +18,7 @@ const CLIENT_EXTERNALS = [
 ]
 
 const clientBundle: UserConfig = {
-  entry: { client: 'src/client/index.ts' },
+  entry: { client: CLIENT_ENTRY },
   outDir: 'lib',
   format: 'cjs',
   platform: 'browser',
