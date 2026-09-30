@@ -21,6 +21,29 @@ dsh plugin --profile web add github:NativeDog1/dsh-boot-animation
 > tripping pnpm's `allowBuilds` build-approval prompt.
 > (Once the package is on npm, `dsh plugin --profile web add dsh-boot-animation` works too.)
 
+### Supported DSH versions
+
+| DSH line | Status |
+|---|---|
+| `0.1.5-rc.x` / `0.1.7-rc.x` | ✅ supported (the desktop app's older core, and the `npm i -g @deepseek-ai/dsh` line) |
+| `0.2.0-rc.x` | ✅ supported (the desktop app's newer core, and the `@next` line) |
+
+**This plugin deliberately declares no `@deepseek-ai/dsh-*` `peerDependencies`.**
+The host half uses only `ctx.webServer`; the browser half reaches `slots` /
+`uiSession` through **dynamic injection**. Nothing statically depends on a host
+package, and the direct benefit is that DSH's version gate **can never skip it** —
+from 0.2.0 that gate drops a plugin whose `peerDependencies` do not match, and the
+symptom is silence: installed, restarted, nothing happens, no error (the market's
+own compatibility guard refuses it too). Other plugins need a `^0.1.5-rc.3 ||
+^0.2.0-rc.1`-style list to cover both lines; this one does not, and cannot be
+skipped for forgetting a line.
+
+The price is tolerating host shape changes ourselves, which the tests guard:
+`verify-blank` (13 host shapes), `verify-session-id`, `verify-client-boot`
+(11 boot-safety checks). "Is this a brand new conversation", for example, moved in
+0.2.0 from `blankBit` on the binding to `session.getSnapshot().blank` — both are
+read, and the face is **subscribed to** rather than sampled once.
+
 Then **restart the DSH service once** — bundle layers are assembled at boot:
 
 ```sh

@@ -19,6 +19,26 @@ dsh plugin --profile web add github:NativeDog1/dsh-boot-animation
 > 所以这条命令**不编译任何东西**，不会触发 pnpm 的 `allowBuilds` 构建授权。
 > （等包发布到 npm 之后，也可以写成 `dsh plugin --profile web add dsh-boot-animation`。）
 
+### 支持的 DSH 版本
+
+| DSH 版本线 | 状态 |
+|---|---|
+| `0.1.5-rc.x` / `0.1.7-rc.x` | ✅ 支持（桌面版旧内核，以及 `npm i -g @deepseek-ai/dsh` 那条线） |
+| `0.2.0-rc.x` | ✅ 支持（桌面版新内核，以及 `@next` 那条线） |
+
+**本插件刻意不声明任何 `@deepseek-ai/dsh-*` 的 `peerDependencies`。** host 半边只用
+`ctx.webServer`，客户端半边只通过**动态注入**取 `slots` / `uiSession`，两处都不静态
+依赖某个宿主包。这样做的直接好处是：它**永远不会被 dsh 的版本兼容闸门跳过** ——
+0.2.0 起那道闸门会把 `peerDependencies` 对不上的插件**整包跳过**，现象是"装上了、
+但重启后什么也没发生"，而且不报错（市场自己的兼容守卫也会拦）。其它插件要靠
+`^0.1.5-rc.3 || ^0.2.0-rc.1` 这种 `||` 列表来适配，本插件不需要，也不会因为漏写
+某条版本线而被跳过。
+
+代价是宿主形状变了得自己容忍，这部分由测试守着：`verify-blank`（13 种宿主形状）、
+`verify-session-id`、`verify-client-boot`（11 项 boot 安全）。例如"这是不是全新对话"
+在 0.2.0 从 binding 上的 `blankBit` 挪到了 `session.getSnapshot().blank` —— 两种都读，
+并且**订阅那个 face 本身**而不是采样一次。
+
 装完**必须重启一次 DSH 服务**才生效（bundle 层是在启动时装配的）：
 
 ```sh
