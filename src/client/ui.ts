@@ -76,6 +76,27 @@ const REASON_LABEL: Record<string, string> = {
  * them from the host's resolver or from an explicit preview. Its only job is to
  * drive one <video> element and report what happened.
  */
+/**
+ * Stop a media element completely when the overlay leaves the tree.
+ *
+ * Ported from @windyduan's PR #2. Detaching a <video> from the DOM does not stop
+ * it: HMR, disabling the plugin, or a slot remount all unmount the overlay while
+ * the element keeps playing and holding a decoder. `load()` aborts the pending
+ * media fetch and releases the decoder.
+ *
+ * Exported so `scripts/verify-teardown.mjs` exercises THIS shipped function.
+ */
+export function releaseVideo(video: HTMLVideoElement): void {
+  try {
+    video.pause()
+    video.currentTime = 0
+    video.removeAttribute('src')
+    video.load()
+  } catch {
+    /* a detached media element can throw here; nothing remains to clean up */
+  }
+}
+
 export function BootOverlay({ store }: { store: ClientStore }): ReactElement | null {
   ensureStyle()
   const snapshot = useClientStore(store)
@@ -151,6 +172,9 @@ export function BootOverlay({ store }: { store: ClientStore }): ReactElement | n
     return () => {
       video.removeEventListener('playing', onPlaying)
       window.clearTimeout(guard)
+      // Unmount is another way the overlay disappears (HMR, plugin disable,
+      // slot remount). Detaching a <video> does not stop media by itself.
+      releaseVideo(video)
     }
   }, [url, nonce, clipId, reason, store, close])
 

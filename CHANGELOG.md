@@ -47,6 +47,16 @@
   boot / preview / playback / random / fallback / install` 共 11 组。
 - `boot.mp4` 保留为向后兼容，但改为 **302** 到具体片段地址，不再承载字节。
 
+### 社区贡献：客户端生命周期修复（@windyduan, PR #2）
+
+**修复：卸载后媒体仍播放、切换后预览仍使用旧片段、当前会话身份在新宿主形状下取不到**
+*Fixed: media surviving unmount, stale preview content after selection changes, and current-session identity resolution on newer host shapes.*
+
+- 覆盖层卸载时现在会 pause、归零、移除 `src` 并调用 `load()`，避免 HMR、禁用插件或 slot 重挂载后仍有声音。
+- 切换片段后会清掉旧的 `activeVersion` 并重新解析；播放中的 `src` 仍保持冻结，黑帧防护不变。
+- 当前会话身份按 session snapshot → `binding.key` → 旧 `props.sessionId` 的顺序解析，保留旧宿主兼容回退。
+- 新增针对真实 `lib/client.js` 的 teardown、version refresh 和 session identity 回归检查，并保留 0.2.4 的 client-boot 检查。
+
 ## 0.2.3 — 2026-09-29
 
 **修复：DSH 0.2.0 起「新对话自动播放」静默失效**

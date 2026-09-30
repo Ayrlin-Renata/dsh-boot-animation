@@ -21,7 +21,7 @@ import { log } from './diagnostics.js'
 
 /** The part of a `SessionFace` this plugin reads. */
 export type SessionFaceLike = {
-  getSnapshot?: () => { blank?: unknown } | null | undefined
+  getSnapshot?: () => { blank?: unknown; sessionId?: unknown } | null | undefined
   subscribe?: (onChange: () => void) => unknown
   blankBit?: unknown
 }
@@ -67,6 +67,39 @@ export function isBlankSession(session: SessionFaceLike | undefined): boolean {
   return session.blankBit === true
 }
 
+/**
+ * Resolve the current Session identity across the host shapes this plugin supports.
+ *
+ * Ported from @windyduan's PR #2. Reading only `props.sessionId` does not throw on
+ * a host that moved the identity — it answers `undefined`, so the per-session
+ * "already played" record and the pin silently stopped matching. The modern
+ * Session face carries `sessionId` in its snapshot; ui-session's current adapter
+ * also publishes the same identity as `binding.key`; the old prop stays last as a
+ * compatibility fallback.
+ *
+ * Exported so `scripts/verify-session-id.mjs` exercises THIS shipped function.
+ */
+export function resolveSessionId(binding: Binding | null | undefined): string | null {
+  const session = binding?.hooks?.session
+  let snapshot: unknown = null
+  try {
+    if (session !== undefined && typeof session.getSnapshot === 'function') {
+      snapshot = session.getSnapshot()
+    }
+  } catch {
+    /* a face that throws on read falls through to the other published shapes */
+  }
+
+  const candidate =
+    (snapshot !== null && typeof snapshot === 'object' && 'sessionId' in snapshot
+      ? (snapshot as { sessionId?: unknown }).sessionId
+      : undefined) ??
+    (typeof binding?.key === 'string' ? binding.key : undefined) ??
+    (typeof binding?.props?.sessionId === 'string' ? binding.props.sessionId : undefined)
+
+  return typeof candidate === 'string' && candidate !== '' ? candidate : null
+}
+
 const noopSubscribe = () => () => {}
 
 /** Subscribe to the current-conversation store, tolerating its absence. */
@@ -95,7 +128,7 @@ export function useCurrentSession(store: CurrentStore | null): {
   )
   const isNewConversation = useSyncExternalStore(subscribeBlank, () => isBlankSession(session))
 
-  const sessionId = typeof binding?.props?.sessionId === 'string' ? binding.props.sessionId : null
+  const sessionId = resolveSessionId(binding)
   return { sessionId, isNewConversation }
 }
 
