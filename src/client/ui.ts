@@ -2,7 +2,8 @@
  * The three surfaces this plugin renders, and the rules they obey.
  *
  *   BootOverlay   the only place a <video> element exists
- *   VideoLibrary  the picker: per-clip preview, the selection, random, fit
+ *   VideoLibrary  the picker: per-clip preview, the selection, random, fit, and
+ *                 the per-conversation pin
  *   PinAction     the pin and the library opener beside Settings
  *
  * Rules that are not negotiable, because each one is a defect that shipped:
@@ -66,6 +67,8 @@ const REASON_LABEL: Record<string, string> = {
   selected: '已选片头',
   active: '当前片头',
   explicit: '指定片段',
+  /** The host answered with this conversation's own pin, not the global choice. */
+  conversation: '本会话指定',
   fallback: '回退',
 }
 
@@ -258,10 +261,13 @@ export function BootOverlay({ store }: { store: ClientStore }): ReactElement | n
 /**
  * The picker.
  *
- * Each row can be PREVIEWED (play it now, change nothing) or SELECTED (make it
- * the clip that future overlays play). Those are two different buttons on
- * purpose: they used to be one click that did the second while looking like the
- * first, which is why "preview" appeared to play the wrong video.
+ * Each row can be PREVIEWED (play it now, change nothing), SELECTED (make it the
+ * clip that future overlays play everywhere) or PINNED TO THIS CONVERSATION
+ * (make it the clip THIS conversation plays, leaving the global choice alone).
+ * Those are three different buttons on purpose: preview and select used to be one
+ * click that did the second while looking like the first, which is why "preview"
+ * appeared to play the wrong video — and the conversation pin is a third
+ * question again, so it gets a third button rather than overloading one.
  */
 export function VideoLibrary({ store, onClose }: { store: ClientStore; onClose: () => void }): ReactElement {
   ensureStyle()
@@ -270,6 +276,9 @@ export function VideoLibrary({ store, onClose }: { store: ClientStore; onClose: 
   const selectedClipId = snapshot.settings.selectedClipId
   const playingClipId = snapshot.playback.clipId
   const previewClipId = snapshot.playback.previewClipId
+  const conversationClipId = snapshot.conversationClipId
+  const hasSession = snapshot.sessionId !== null
+  const nameOf = (clipId: string): string => clips.find((item) => item.id === clipId)?.name ?? clipId
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -296,7 +305,31 @@ export function VideoLibrary({ store, onClose }: { store: ClientStore; onClose: 
       h(
         'p',
         null,
-        '「▶ 预览」立刻播这一段（不改你的选择）；「选它」把它设为以后开片头时播放的片段。',
+        '「▶ 预览」立刻播这一段（不改你的选择）；「选它」设为全局片头；「仅本会话」只让当前这个会话播它。',
+      ),
+      h(
+        'div',
+        { className: 'dba-ses' },
+        hasSession
+          ? conversationClipId === null
+            ? '本会话跟随全局片头。想只给这个会话换一段，点那一行的「仅本会话」。'
+            : '本会话固定播放：' + nameOf(conversationClipId)
+          : '还没有打开的会话：先打开一个对话，才能只对它生效。',
+        conversationClipId === null
+          ? null
+          : h(
+              'button',
+              {
+                type: 'button',
+                className: 'dba-row-btn',
+                disabled: busy,
+                title: '取消这个会话的固定片头，回到全局选择',
+                onClick: () => {
+                  if (!busy) void store.setConversationClip(null)
+                },
+              },
+              '取消（回到全局）',
+            ),
       ),
       ...(clips.length === 0
         ? [h('div', { className: 'dba-item' }, h('span', { className: 'dba-nm' }, snapshot.loading ? '（正在读取…）' : '（还没找到任何视频）'))]
@@ -305,11 +338,15 @@ export function VideoLibrary({ store, onClose }: { store: ClientStore; onClose: 
               'div',
               {
                 key: clip.id,
-                className: 'dba-item' + (clip.id === selectedClipId ? ' dba-cur' : ''),
+                className:
+                  'dba-item' +
+                  (clip.id === selectedClipId ? ' dba-cur' : '') +
+                  (clip.id === conversationClipId ? ' dba-ses-cur' : ''),
                 title: clip.file ?? clip.id,
               },
               h('span', { className: 'dba-mark' }, clip.id === selectedClipId ? '✓' : ''),
               h('span', { className: 'dba-nm' }, clip.name),
+              clip.id === conversationClipId ? h('span', { className: 'dba-badge dba-b-ses' }, '本会话') : null,
               clip.id === playingClipId
                 ? h('span', { className: 'dba-badge dba-b-sel' }, previewClipId === clip.id ? '预览中' : '播放中')
                 : null,
@@ -363,6 +400,21 @@ export function VideoLibrary({ store, onClose }: { store: ClientStore; onClose: 
                   },
                 },
                 clip.id === selectedClipId ? '已选' : '选它',
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dba-row-btn' + (clip.id === conversationClipId ? ' dba-go' : ''),
+                  disabled: busy || !hasSession,
+                  title: hasSession
+                    ? '只让当前这个会话播这一段 —— 不改你给其它会话和全局选的那一段'
+                    : '先打开一个对话，才能只对它生效',
+                  onClick: () => {
+                    if (!busy && hasSession) void store.setConversationClip(clip.id)
+                  },
+                },
+                clip.id === conversationClipId ? '本会话 ✓' : '仅本会话',
               ),
             ),
           )),
@@ -490,8 +542,9 @@ export function PinAction({
  * The overlay's host component: the only place the "when to play" rules live.
  *
  * A new conversation plays once (recorded per session); a pinned conversation
- * replays on every entry. Both go through `playMode`, so a random-playback
- * setting is honoured identically for both — there is no second playback path.
+ * replays on every entry. Both go through `playMode`, so a per-conversation pin
+ * AND a random-playback setting are honoured identically for both — there is no
+ * second playback path.
  */
 export function AppRoot({ store, sessionStore }: { store: ClientStore; sessionStore: CurrentStore | null }): ReactElement {
   const snapshot = useClientStore(store)
@@ -499,10 +552,19 @@ export function AppRoot({ store, sessionStore }: { store: ClientStore; sessionSt
   const [libraryOpen, setLibraryOpen] = useState(false)
   const lastSessionRef = useRef<string | null>(null)
 
-  // Read the library once, then whenever the picker or a write says it changed.
+  // Tell the store which conversation we are in BEFORE anything asks the host a
+  // per-conversation question. Effects run in declaration order, so this lands
+  // ahead of the auto-play effect below — otherwise the first resolve of a newly
+  // entered conversation would be asked without its session.
+  useEffect(() => {
+    store.setSession(sessionId)
+  }, [sessionId, store])
+
+  // Read the library once, and again whenever the conversation changes: the
+  // per-conversation pin is host state, so it arrives with the listing.
   useEffect(() => {
     void store.loadCatalog()
-  }, [store])
+  }, [store, sessionId])
 
   // Register as the picker's opener. The pin lives in another slot and cannot
   // share React state with this tree, so it reaches us through this set.

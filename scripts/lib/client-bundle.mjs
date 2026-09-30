@@ -77,16 +77,32 @@ export function loadClientBundle() {
 }
 
 /**
- * A fetch stub that answers the plugin's three routes from a fixed catalog.
+ * A fetch stub that answers the plugin's routes from a fixed catalog.
  *
- * @param {{ clips: Array<any>, selectedClipId?: string | null, randomPlayback?: boolean, fitMode?: string, resolvedClipId?: string | null }} options
+ * `?session=` is honoured the way the real host honours it: a pin answers for
+ * its own conversation, and a pin write answers with the pin AND NOTHING ELSE —
+ * no settings fields at all. That last detail is modelled deliberately, because
+ * "a conversation write must not blank the global settings" is exactly the bug
+ * this shape would otherwise hide.
+ *
+ * @param {{ clips: Array<any>, selectedClipId?: string | null, randomPlayback?: boolean, fitMode?: string, resolvedClipId?: string | null, conversationOverrides?: Record<string, string> }} options
  */
 export function makeFetchStub(options) {
   const calls = []
+  /** @type {Record<string, string>} */
+  const overrides = { ...(options.conversationOverrides ?? {}) }
   const state = {
     selectedClipId: options.selectedClipId ?? null,
     randomPlayback: options.randomPlayback ?? false,
     fitMode: options.fitMode ?? 'cover',
+    conversationOverrides: overrides,
+  }
+  /** The `?session=` of a request URL, or null. */
+  const sessionOf = (url) => new URL(String(url), 'http://stub.invalid').searchParams.get('session')
+  /** The pin in effect for the session a URL names. */
+  const pinnedFor = (url) => {
+    const session = sessionOf(url)
+    return session !== null && overrides[session] !== undefined ? overrides[session] : null
   }
   const fetchStub = async (url, init = {}) => {
     calls.push({ url: String(url), method: init.method ?? 'GET', body: init.body })
@@ -98,12 +114,31 @@ export function makeFetchStub(options) {
     const text = String(url)
     if (text.includes('/select')) {
       const patch = init.body === undefined ? {} : JSON.parse(String(init.body))
+      if (patch.scope === 'conversation') {
+        const session = String(patch.sessionId ?? '')
+        if (patch.id === null || patch.id === undefined || patch.id === '') delete overrides[session]
+        else overrides[session] = String(patch.id)
+        return respond({
+          ok: true,
+          scope: 'conversation',
+          conversationClipId: overrides[session] ?? null,
+          name: 'stub',
+        })
+      }
       if (patch.selectedClipId !== undefined) state.selectedClipId = patch.selectedClipId
       if (patch.randomPlayback !== undefined) state.randomPlayback = patch.randomPlayback
       if (patch.fitMode !== undefined) state.fitMode = patch.fitMode
-      return respond({ ok: true, ...state, name: 'stub' })
+      return respond({
+        ok: true,
+        selectedClipId: state.selectedClipId,
+        randomPlayback: state.randomPlayback,
+        fitMode: state.fitMode,
+        name: 'stub',
+      })
     }
     if (text.includes('/resolve.json')) {
+      const pinned = pinnedFor(text)
+      if (pinned !== null) return respond({ clipId: pinned, how: 'conversation', version: 'v1', mediaUrl: null })
       return respond({ clipId: options.resolvedClipId ?? state.selectedClipId, how: 'selected', version: 'v1', mediaUrl: null })
     }
     return respond({
@@ -113,6 +148,9 @@ export function makeFetchStub(options) {
       selectedClipId: state.selectedClipId,
       randomPlayback: state.randomPlayback,
       fitMode: state.fitMode,
+      conversationClipId: pinnedFor(text),
+      conversationOverrideCount: Object.keys(overrides).length,
+      sessionKnown: sessionOf(text) !== null,
     })
   }
   return { fetchStub, calls, state }

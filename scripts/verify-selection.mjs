@@ -3,13 +3,18 @@
  *
  * Three claims are tested, and each corresponds to a requirement:
  *
- *   A: `selection.json` holds settings ONLY — never a media path.
- *   B: every historical or damaged shape migrates to a valid v2 selection.
+ *   A: `selection.json` holds settings ONLY — never a media path. That includes
+ *      the per-conversation layer: a pin is validated exactly like the global
+ *      pick, so a path cannot get in through the map either.
+ *   B: every historical or damaged shape migrates to a valid current selection.
  *   C: a selection file that cannot be parsed does NOT stop the plugin.
  *
  * The migration is exercised through the REAL exported `migrate()` (a pure
  * function, imported from the built host module) rather than by writing files and
  * inferring, and the end-to-end behaviour is exercised through the REAL routes.
+ *
+ * The per-conversation BEHAVIOUR (which clip actually plays) is asserted
+ * separately, in verify-conversation-override.mjs; this file only owns the shape.
  *
  * Usage: node scripts/verify-selection.mjs
  */
@@ -39,7 +44,48 @@ console.log('migrate() — pure, no I/O:')
   report.check(v2.selection.selectedClipId === 'builtin:cyberpunk', 'v2 passes its pick through')
   report.check(v2.selection.randomPlayback === true, 'v2 passes randomPlayback through')
   report.check(v2.selection.fitMode === 'contain', 'v2 passes fitMode through')
-  report.check(v2.migrated === false, 'a current v2 file is not reported as migrated')
+  report.check(v2.migrated === true, 'a v2 file reports as migrated (it predates the conversation layer)')
+  report.check(
+    v2.selection.conversationOverrides !== null &&
+      typeof v2.selection.conversationOverrides === 'object' &&
+      Object.keys(v2.selection.conversationOverrides).length === 0,
+    'a v2 file gains an empty conversation layer rather than an undefined one',
+  )
+}
+{
+  const v3 = migrate({
+    version: 3,
+    selectedClipId: 'builtin:brand',
+    randomPlayback: false,
+    fitMode: 'cover',
+    conversationOverrides: { 'session-1': 'builtin:cyberpunk' },
+  })
+  report.check(v3.migrated === false, 'a file of the current version is not reported as migrated')
+  report.check(
+    v3.selection.conversationOverrides['session-1'] === 'builtin:cyberpunk',
+    'a current file keeps its per-conversation pins',
+  )
+}
+{
+  // The conversation layer is validated by the SAME rules as the global pick: a
+  // hand-edited file must not be able to smuggle a media path in through the map,
+  // which is the whole reason a path is rejected as a selection in the first place.
+  const dirty = migrate({
+    version: 3,
+    conversationOverrides: {
+      'session-ok': 'builtin:brand',
+      '   ': 'builtin:brand', // blank key
+      'session-path': 'C:/movies/a.mp4', // a path, not a ClipId
+      'session-active': 'active', // the route alias is not a real clip
+      'session-num': 42, // wrong type
+    },
+  })
+  const map = dirty.selection.conversationOverrides
+  report.check(map['session-ok'] === 'builtin:brand', 'a well-formed pin survives the migration')
+  report.check(!('   ' in map), 'a blank session key is dropped')
+  report.check(!('session-path' in map), 'a PATH is not accepted as a pin')
+  report.check(!('session-active' in map), 'the "active" alias is not accepted as a pin')
+  report.check(!('session-num' in map), 'a non-string pin is dropped')
 }
 {
   // The rule that matters most: a path is not a ClipId, so it must never be
@@ -85,10 +131,10 @@ console.log('\nover the real routes:')
     report.check(written.ok === true, 'select writes successfully')
 
     const onDisk = JSON.parse(readFileSync(h.selectionFile(), 'utf8'))
-    report.check(onDisk.version === 2, 'the file on disk is version 2')
+    report.check(onDisk.version === SELECTION_VERSION, `the file on disk is version ${String(SELECTION_VERSION)}`)
     report.check(onDisk.selectedClipId === 'builtin:cyberpunk', 'the file records the chosen ClipId')
     report.check(
-      Object.keys(onDisk).sort().join(',') === 'fitMode,randomPlayback,selectedClipId,version',
+      Object.keys(onDisk).sort().join(',') === 'conversationOverrides,fitMode,randomPlayback,selectedClipId,version',
       'the file contains settings ONLY (no paths, no timestamps)',
       Object.keys(onDisk).join(', '),
     )
@@ -138,7 +184,10 @@ console.log('\na damaged selection file:')
       kinds.join(', '),
     )
     const repaired = JSON.parse(readFileSync(join(home, 'boot-animation', 'selection.json'), 'utf8'))
-    report.check(repaired.version === 2, 'the file is rewritten as a valid v2 selection')
+    report.check(
+      repaired.version === SELECTION_VERSION,
+      `the file is rewritten as a valid v${String(SELECTION_VERSION)} selection`,
+    )
     // A path must never survive a round trip, even from a legacy file.
     writeFileSync(join(home, 'boot-animation', 'selection.json'), JSON.stringify({ id: 'D:/movies/a.mp4' }))
     const second = await startHarness({ home })

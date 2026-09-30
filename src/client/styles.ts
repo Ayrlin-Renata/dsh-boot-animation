@@ -63,10 +63,14 @@ export const CSS = `
   border:1px solid transparent}
 .dba-item:hover{background:rgba(127,127,127,.10)}
 .dba-item.dba-cur{border-color:rgba(7,193,96,.55);background:rgba(7,193,96,.10)}
+/* The per-conversation pin is a DIFFERENT question from the global selection, so
+   it gets a different colour rather than competing for the same green. */
+.dba-item.dba-ses-cur{border-color:rgba(64,140,255,.55);background:rgba(64,140,255,.10)}
 .dba-item .dba-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dba-badge{font-size:11px;padding:1px 7px;border-radius:999px;
   background:rgba(127,127,127,.18);color:var(--dsw-alias-text-secondary,#777);white-space:nowrap}
 .dba-badge.dba-b-sel{background:rgba(7,193,96,.16);color:#07974b}
+.dba-badge.dba-b-ses{background:rgba(64,140,255,.18);color:#2c6bd6}
 .dba-badge.dba-b-prev{background:rgba(64,140,255,.18);color:#2c6bd6}
 .dba-badge.dba-b-warn{background:rgba(210,120,40,.18);color:#b46214;cursor:help}
 .dba-meta{font-size:11.5px;color:var(--dsw-alias-text-secondary,#999);white-space:nowrap}
@@ -79,6 +83,10 @@ export const CSS = `
   font-size:11.5px;color:var(--dsw-alias-text-secondary,#777);word-break:break-all}
 .dba-dir code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;
   color:var(--dsw-alias-text-primary,#333)}
+.dba-ses{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:8px 10px;
+  border-radius:9px;background:rgba(64,140,255,.10);
+  font-size:12px;color:var(--dsw-alias-text-secondary,#777)}
+.dba-ses .dba-row-btn{margin-left:auto}
 .dba-bar{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 .dba-fit{display:flex;align-items:center;gap:8px;margin-top:12px;
   font-size:12px;color:var(--dsw-alias-text-secondary,#777)}

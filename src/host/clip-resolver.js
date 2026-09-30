@@ -6,19 +6,24 @@
  *
  *   resolve('builtin:brand')      an explicit clip
  *   resolve('active')             whatever the current mode says
- *   resolveActive()               the same, with the reason attached
+ *   resolveActive(sessionId)      the same, with the reason attached
  *
  * `how` is returned rather than logged, so `/status.json` can explain WHY a clip
- * is live (selection / random / env / legacy drop-in / library / embedded) and a
- * test can assert it instead of inferring it.
+ * is live (conversation / selection / random / env / legacy drop-in / library /
+ * embedded) and a test can assert it instead of inferring it.
  *
  * The priority chain is the historical one, kept deliberately: an installed copy
  * that relied on `$DSH_HOME/boot-animation/intro.mp4` or on DSH_BOOT_ANIMATION
- * must keep working after this refactor.
+ * must keep working after this refactor. The ONE layer added on top is the
+ * per-conversation pin, and it is added at the TOP because it is the most
+ * specific instruction a user can give: "this conversation plays this clip".
+ * Every layer below it still applies to every conversation that has no pin, and
+ * a pin whose clip has gone away falls through rather than showing nothing.
  */
 import { basename, extname } from 'node:path'
 import { ACTIVE_ALIAS, fileClipId, normalizeClipId } from './clip-id.js'
 import { ClipError } from './errors.js'
+import { normalizeSessionId } from './selection-store.js'
 
 export class ClipResolver {
   /**
@@ -64,14 +69,49 @@ export class ClipResolver {
   }
 
   /**
+   * The clip a conversation is pinned to, or null when it has no USABLE pin.
+   *
+   * Two different questions live here, and they are answered the same way the
+   * global selection answers them: a pin that names a clip which no longer
+   * exists (the user moved the file) is not an error and not a blocker — it is
+   * reported and treated as "no pin", so the conversation falls back to the
+   * ordinary chain.
+   *
+   * @param {unknown} sessionId
+   * @returns {import('./clip-registry.js').Clip | null}
+   */
+  conversationPick(sessionId) {
+    const session = normalizeSessionId(sessionId)
+    if (session === null) return null
+    const wanted = this.selection.conversationOverrideOf(session)
+    if (wanted === null) return null
+    const hit = this.registry.get(wanted)
+    if (hit === null) {
+      this.diagnostics?.event('conversation-override-stale', { id: wanted })
+      return null
+    }
+    return hit
+  }
+
+  /**
    * Whatever should play now, and why.
    *
+   * @param {unknown} [sessionId] the conversation asking, when the caller knows
    * @returns {{ clip: import('./clip-registry.js').Clip | null, how: string }}
    */
-  resolveActive() {
+  resolveActive(sessionId = null) {
     const clips = this.registry.list()
 
-    // Random playback wins over a stored selection: it is an explicit mode, and
+    // 1. The per-conversation pin, the most specific instruction there is. It
+    // outranks random playback on purpose: pinning a conversation to a clip and
+    // then being handed a random one is not what pinning means.
+    const pinned = this.conversationPick(sessionId)
+    if (pinned !== null) {
+      this.diagnostics?.event('active-conversation', { id: pinned.id })
+      return { clip: pinned, how: 'conversation' }
+    }
+
+    // 2. Random playback wins over a stored selection: it is an explicit mode, and
     // the stored selection is only what it falls back to when switched off.
     if (this.selection.read().randomPlayback) {
       const pool = clips.filter((clip) => clip.bytes > 0)

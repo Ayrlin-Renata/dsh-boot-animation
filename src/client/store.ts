@@ -11,6 +11,11 @@
  * identities are deliberately NOT the same field:
  *
  *   settings.selectedClipId      what the user chose; changes ONLY on select()
+ *   conversationClipId           the pin THIS conversation carries, if any. It
+ *                                outranks the global choice on the host and is
+ *                                never written into selectedClipId — the two are
+ *                                different questions ("what do I usually want"
+ *                                vs "what does this one conversation want").
  *   playback.clipId              what the <video> element is being pointed at
  *   playback.previewClipId       what the last preview asked for (may equal
  *                                neither of the others, and never persists)
@@ -76,6 +81,16 @@ export type Snapshot = {
   catalog: Catalog | null
   settings: Settings
   playback: Playback
+  /** Which conversation the client is in, as far as the host told us. */
+  sessionId: string | null
+  /**
+   * The clip pinned to THIS conversation, or null.
+   *
+   * A separate field from `settings.selectedClipId` on purpose: the per
+   * conversation pin sits ON TOP of the global choice and must never be confused
+   * with it — the same reason the host keeps two fields.
+   */
+  conversationClipId: string | null
   loading: boolean
   busy: boolean
   status: { text: string; kind: string }
@@ -117,6 +132,8 @@ export class ClientStore {
     catalog: null,
     settings: EMPTY_SETTINGS,
     playback: IDLE_PLAYBACK,
+    sessionId: null,
+    conversationClipId: null,
     loading: false,
     busy: false,
     status: { text: '', kind: '' },
@@ -144,11 +161,38 @@ export class ClientStore {
     }
   }
 
+  /**
+   * Which conversation the client is in.
+   *
+   * Every per-conversation question is answered by the HOST; the client only
+   * carries the identity. That is what keeps one implementation of the priority
+   * chain, and it is why this is set once per session change rather than being
+   * threaded through every call site.
+   *
+   * Does not fetch: the caller re-reads the catalog (which is where the pin
+   * arrives from the host) when the conversation changes.
+   */
+  setSession(sessionId: string | null): void {
+    if (this.#snapshot.sessionId === sessionId) return
+    this.#set({ sessionId })
+  }
+
+  /** `session=<id>` for a host call, or '' when no conversation is open yet. */
+  #sessionParam(): string {
+    const id = this.#snapshot.sessionId
+    return id === null || id === '' ? '' : 'session=' + encodeURIComponent(id)
+  }
+
+  #listUrl(): string {
+    const param = this.#sessionParam()
+    return param === '' ? LIST_URL : LIST_URL + '?' + param
+  }
+
   /** Read the library and the settings from the host. Safe to call repeatedly. */
   async loadCatalog(): Promise<void> {
     this.#set({ loading: true })
     try {
-      const response = await fetch(LIST_URL, { cache: 'no-store' })
+      const response = await fetch(this.#listUrl(), { cache: 'no-store' })
       if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
       const data = (await response.json()) as {
         videos?: ClipInfo[]
@@ -157,6 +201,7 @@ export class ClientStore {
         selectedClipId?: string | null
         randomPlayback?: boolean
         fitMode?: FitMode
+        conversationClipId?: string | null
       }
       this.#set({
         catalog: {
@@ -169,10 +214,11 @@ export class ClientStore {
           randomPlayback: data.randomPlayback === true,
           fitMode: data.fitMode === 'contain' ? 'contain' : 'cover',
         },
+        conversationClipId: typeof data.conversationClipId === 'string' ? data.conversationClipId : null,
         loading: false,
         status: { text: '', kind: '' },
       })
-      log('catalog loaded', { clips: data.videos?.length ?? 0 })
+      log('catalog loaded', { clips: data.videos?.length ?? 0, conversationClipId: data.conversationClipId ?? null })
     } catch (error) {
       notify('catalog load failed', String(error))
       this.#set({ loading: false, status: { text: '读取片库失败：' + String(error), kind: 'dba-err' } })
@@ -194,18 +240,45 @@ export class ClientStore {
         selectedClipId?: string | null
         randomPlayback?: boolean
         fitMode?: FitMode
+        conversationClipId?: string | null
       }
       if (data.ok !== true) {
         this.#set({ busy: false, status: { text: '保存失败：' + String(data.error ?? '未知错误'), kind: 'dba-err' } })
         return false
       }
+      const previous = this.#snapshot
       this.#set({
         busy: false,
+        /**
+         * Only the fields the host actually ANSWERED with.
+         *
+         * A `scope=conversation` write answers with the pin and nothing else, so
+         * a blanket assignment here would blank the global settings every time a
+         * user pinned one conversation. The catalog reload below is what makes
+         * the final state authoritative.
+         */
         settings: {
-          selectedClipId: typeof data.selectedClipId === 'string' ? data.selectedClipId : null,
-          randomPlayback: data.randomPlayback === true,
-          fitMode: data.fitMode === 'contain' ? 'contain' : 'cover',
+          selectedClipId:
+            data.selectedClipId === undefined
+              ? previous.settings.selectedClipId
+              : typeof data.selectedClipId === 'string'
+                ? data.selectedClipId
+                : null,
+          randomPlayback:
+            data.randomPlayback === undefined ? previous.settings.randomPlayback : data.randomPlayback === true,
+          fitMode:
+            data.fitMode === undefined
+              ? previous.settings.fitMode
+              : data.fitMode === 'contain'
+                ? 'contain'
+                : 'cover',
         },
+        conversationClipId:
+          data.conversationClipId === undefined
+            ? previous.conversationClipId
+            : typeof data.conversationClipId === 'string'
+              ? data.conversationClipId
+              : null,
         status: { text: okText, kind: 'dba-ok' },
       })
       await this.loadCatalog()
@@ -230,6 +303,25 @@ export class ClientStore {
 
   async setRandomPlayback(on: boolean): Promise<boolean> {
     return this.#writeSettings({ randomPlayback: on }, on ? '已开启随机播放' : '已关闭随机播放')
+  }
+
+  /**
+   * Pin THIS conversation to a clip, or clear its pin with `null`.
+   *
+   * Deliberately not `selectClip`: a per-conversation pin sits ON TOP of the
+   * global choice, so writing it must not overwrite that choice. That separation
+   * is the entire point of the layer, and it is why the host keeps the two in
+   * different fields.
+   */
+  async setConversationClip(clipId: string | null): Promise<boolean> {
+    const sessionId = this.#snapshot.sessionId
+    if (sessionId === null) {
+      this.#set({ status: { text: '还没有打开的会话：先打开一个对话，才能只对它生效', kind: 'dba-err' } })
+      return false
+    }
+    const clip = clipId === null ? null : this.clip(clipId)
+    const okText = clipId === null ? '已取消本会话的固定片头' : '本会话固定播放：' + (clip?.name ?? clipId)
+    return this.#writeSettings({ scope: 'conversation', sessionId, id: clipId }, okText)
   }
 
   async setFitMode(mode: FitMode): Promise<boolean> {
@@ -287,7 +379,10 @@ export class ClientStore {
    */
   async playMode(mode: 'active' | 'random' | 'selected', reason: string): Promise<boolean> {
     try {
-      const response = await fetch(`${RESOLVE_URL}?mode=${mode}`, { cache: 'no-store' })
+      // The conversation travels with every resolve: whether THIS conversation
+      // has its own pin is a host decision, not a client one.
+      const param = this.#sessionParam()
+      const response = await fetch(`${RESOLVE_URL}?mode=${mode}${param === '' ? '' : '&' + param}`, { cache: 'no-store' })
       if (response.ok) {
         const data = (await response.json()) as { clipId?: string | null; how?: string }
         if (typeof data.clipId === 'string' && data.clipId !== '') {
