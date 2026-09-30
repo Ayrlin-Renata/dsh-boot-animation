@@ -52,11 +52,14 @@
     "build": "bash scripts/build.sh",
     "build:client": "node scripts/check-css-template.mjs && tsdown",
     "embed-clips": "node scripts/embed-clips.mjs",
-    "check": "node scripts/check-css-template.mjs && node scripts/verify-routes.mjs && node scripts/verify-blank.mjs && node scripts/verify-client-boot.mjs",
+    "check": "node scripts/check-css-template.mjs && node scripts/verify-routes.mjs && node scripts/verify-blank.mjs && node scripts/verify-client-boot.mjs && node scripts/verify-teardown.mjs && node scripts/verify-version-refresh.mjs && node scripts/verify-session-id.mjs",
     "verify:routes": "node scripts/verify-routes.mjs",
     "verify:blank": "node scripts/verify-blank.mjs",
     "verify:boot": "node scripts/verify-client-boot.mjs",
-    "verify:letterbox": "node scripts/verify-letterbox.mjs"
+    "verify:letterbox": "node scripts/verify-letterbox.mjs",
+    "verify:teardown": "node scripts/verify-teardown.mjs",
+    "verify:version-refresh": "node scripts/verify-version-refresh.mjs",
+    "verify:session-id": "node scripts/verify-session-id.mjs"
   },
   "exports": {
     ".": {

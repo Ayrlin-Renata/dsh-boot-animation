@@ -17,8 +17,9 @@
  * Both are list slots, so each is an added cell, never a replacement.
  *
  * Which session is current comes from the ui-session service. Its
- * `adapter.current` store resolves to `{ key, hooks, keyedHooks, props }`, i.e.
- * `props.sessionId` and `hooks.session`.
+ * `adapter.current` store resolves to `{ key, hooks, keyedHooks, props }`.
+ * Modern hosts expose identity through the Session snapshot and `key`; the old
+ * `props.sessionId` shape remains a compatibility fallback below.
  *
  * `hooks.session` is a `SessionFace` — `ISession & ObservableSnapshot<SessionSnapshot>`
  * (see `@deepseek-ai/dsh-api-session-controller`) — so "this conversation has no
@@ -118,8 +119,23 @@ function resolveActiveVersion(): void {
   })()
 }
 
+/**
+ * Drops the pinned content key and resolves it again after a selection change.
+ *
+ * Clearing the key first keeps the existing rule that src never changes during
+ * playback: the next overlay mount sees the bare route while the fresh key is
+ * resolving, and subsequent plays use the newly pinned immutable URL.
+ *
+ * Exported so the shipped client bundle can be regression-tested directly.
+ */
+export function refreshActiveVersion(): void {
+  versionStarted = false
+  activeVersion = null
+  resolveActiveVersion()
+}
+
 /** The URL to play, carrying the content key when it is already known. */
-function videoSrc(): string {
+export function videoSrc(): string {
   return activeVersion === null ? VIDEO_URL : VIDEO_URL + '?v=' + encodeURIComponent(activeVersion)
 }
 
@@ -325,7 +341,7 @@ type CurrentStore = {
  * silently instead of loudly.
  */
 type SessionFaceLike = {
-  getSnapshot?: () => { blank?: unknown } | null | undefined
+  getSnapshot?: () => { blank?: unknown; sessionId?: unknown } | null | undefined
   subscribe?: (onChange: () => void) => unknown
   blankBit?: unknown
 }
@@ -367,6 +383,34 @@ export function isBlankSession(session: SessionFaceLike | undefined): boolean {
 
 const noopSubscribe = () => () => {}
 
+/**
+ * Resolve the current Session identity across the host shapes this plugin supports.
+ *
+ * The modern Session face carries sessionId in its snapshot, while ui-session's
+ * current adapter also exposes the same identity as binding.key. Keep the old
+ * props.sessionId read as a final compatibility fallback.
+ *
+ * Exported so the shipped client bundle can be regression-tested directly.
+ */
+export function resolveSessionId(binding: Binding | null): string | null {
+  const session = binding?.hooks?.session
+  let snapshot: unknown = null
+  try {
+    if (typeof session?.getSnapshot === 'function') snapshot = session.getSnapshot()
+  } catch {
+    /* a face that throws on read falls through to the other published shapes */
+  }
+
+  const candidate =
+    (snapshot !== null && typeof snapshot === 'object' && 'sessionId' in snapshot
+      ? (snapshot as { sessionId?: unknown }).sessionId
+      : undefined) ??
+    (typeof binding?.key === 'string' ? binding.key : undefined) ??
+    (typeof binding?.props?.sessionId === 'string' ? binding.props.sessionId : undefined)
+
+  return typeof candidate === 'string' && candidate !== '' ? candidate : null
+}
+
 /** Subscribe to the current-conversation store, tolerating its absence. */
 function useCurrentSession(store: CurrentStore | null): {
   sessionId: string | null
@@ -393,8 +437,25 @@ function useCurrentSession(store: CurrentStore | null): {
   )
   const isNewConversation = useSyncExternalStore(subscribeBlank, () => isBlankSession(session))
 
-  const sessionId = typeof binding?.props?.sessionId === 'string' ? binding.props.sessionId : null
+  const sessionId = resolveSessionId(binding)
   return { sessionId, isNewConversation }
+}
+
+/**
+ * Stop a media element completely when the overlay leaves the tree.
+ *
+ * Exported for the same shipped-bundle regression style as isBlankSession().
+ */
+export function releaseVideo(video: HTMLVideoElement): void {
+  try {
+    video.pause()
+    video.currentTime = 0
+    video.removeAttribute('src')
+    // load() aborts a pending media fetch and releases the decoder.
+    video.load()
+  } catch {
+    /* a detached media element can throw here; nothing remains to clean up */
+  }
 }
 
 function BootOverlay({
@@ -521,6 +582,9 @@ function BootOverlay({
     return () => {
       video.removeEventListener('playing', onPlaying)
       window.clearTimeout(guard)
+      // Unmount is another way the overlay disappears (HMR, plugin disable,
+      // slot remount). Detaching a <video> does not stop media by itself.
+      releaseVideo(video)
     }
   }, [showing, close])
 
@@ -734,8 +798,11 @@ function VideoLibrary({ onClose, onPreview }: { onClose: () => void; onPreview: 
         })
         const data = (await response.json()) as { ok?: boolean; error?: string; name?: string }
         if (data.ok === true) {
-          setMsg({ text: '已切换：' + String(data.name ?? id) + '（下次播片头生效）', kind: 'dba-ok' })
+          setMsg({ text: '已切换：' + String(data.name ?? id) + '（点「预览当前」立即试看）', kind: 'dba-ok' })
           await load()
+          // Drop the previous content key so the next mount — including an
+          // immediate preview — resolves the clip that was just selected.
+          refreshActiveVersion()
         } else {
           setMsg({ text: '切换失败：' + String(data.error ?? '未知错误'), kind: 'dba-err' })
         }
