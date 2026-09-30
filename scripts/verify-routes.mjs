@@ -223,7 +223,32 @@ console.log(`library: ${ids.length} video(s) — ${ids.join(', ')}`)
 }
 
 await expect(`${BASE}/status.json`, 200)
-await expect(`${BASE}/boot.mp4`, 200)
+/**
+ * `/boot.mp4` is backward compatibility only, and it must NOT serve bytes.
+ *
+ * Every clip used to be served under this one URL ("whatever is active"), which
+ * is what let a stale cache entry keep playing the previous clip. It now
+ * redirects to the canonical per-clip resource, so even an old client ends up
+ * asking for a URL that identifies one clip.
+ */
+{
+  const legacy = await call(`${BASE}/boot.mp4`)
+  const location = String(legacy.headers?.location ?? '')
+  const isRedirect = legacy.code === 302
+  const pointsAtClip = location.includes(`${BASE}/media/`)
+  console.log(`  ${isRedirect ? 'ok  ' : 'FAIL'} /boot.mp4 -> ${legacy.code} (want 302, not bytes under a shared URL)`)
+  console.log(`  ${pointsAtClip ? 'ok  ' : 'FAIL'} /boot.mp4 location: ${location === '' ? '(none)' : location}`)
+  if (!isRedirect) failures.push('/boot.mp4 must redirect to a per-clip URL instead of serving bytes')
+  if (!pointsAtClip) failures.push('/boot.mp4 does not redirect to a clip URL')
+  if (pointsAtClip) {
+    // The query is dropped here: this check is about routing and bytes, and the
+    // cache semantics of ?v= are asserted in depth by verify-cache.mjs.
+    const followed = await call(location.split('?')[0])
+    const okFollow = followed.code === 200 && followed.bytes > 0
+    console.log(`  ${okFollow ? 'ok  ' : 'FAIL'} following the redirect -> ${followed.code}, ${followed.bytes} bytes`)
+    if (!okFollow) failures.push('the redirect target did not serve a clip')
+  }
+}
 for (const id of ids) await expect(`${BASE}/media/${id}`, 200)
 const missId = `${BASE}/media/definitely-not-an-id`
 const noId = `${BASE}/media`
@@ -248,7 +273,11 @@ for (const url of [missId, noId, slashId, wrongMethod]) expectNoStore(url)
  */
 console.log('\nreusable media:')
 {
-  const url = `${BASE}/boot.mp4`
+  // The canonical per-clip resource, not the legacy shared URL: this is what a
+  // client addresses now, so this is what has to be reusable.
+  const status = await call(`${BASE}/status.json`)
+  const activeId = JSON.parse(status.body).active
+  const url = `${BASE}/media/${encodeURIComponent(String(activeId))}`
   const first = await call(url)
   const etag = first.headers?.etag
   const cache = String(first.headers?.['cache-control'] ?? '')
