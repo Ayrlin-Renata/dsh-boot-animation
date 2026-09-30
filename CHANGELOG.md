@@ -5,7 +5,49 @@
 > Changes that a user can see, one section per release. English one-liners are
 > included so an English reader can scan the list.
 
-## Unreleased
+## 0.3.0 — 2026-09-29
+
+**架构级重构：一个片段一个 ClipId、一条播放路径、一个数据源**
+*Architectural rewrite: one ClipId per clip, one playback path, one source of truth.*
+
+0.2.x 的问题不是"少几个判断"，而是没有单一数据源：唯一的播放地址是 `/boot.mp4`
+（含义是"当前 active 那个"），片库、选择、预览、播放、缓存各自持有状态。
+详见新增的 **ARCHITECTURE.md**（十章）。
+
+修掉的具体缺陷（每条都有对应的回归测试）：
+
+- **四个片段显示不同、播放却是同一个**：唯一的播放 URL 是 `/boot.mp4`，主机端无视 URL、
+  永远返回 active；片库的「预览」甚至无法指名片段。现在每个片段有自己的
+  `/media/<ClipId>?v=<自己的 version>`，片库每行有独立的「▶ 预览」。
+- **选了新片头、不刷新页面仍播旧的（F5 才好）**：`activeVersion` 是模块级全局只取一次，
+  `src` 在挂载时被 `useState` 冻结，而旧片 active 时那个 URL 曾被应答为 `immutable`
+  （一年），于是旧字节被无限复用。现在 url 随 `playClip` 变化、每个片段一个地址，
+  且 `?v=` **只在本片段自己的 version 上**才允许 immutable。
+- **预览结果总是一样**：预览不再等于"选择 + 播一次选中项"，试听 B 时 A 仍是你的选择。
+- **安装/首屏卡顿**：① 首次请求内置片段时**四段全部 base64 解码** → 现在只解被请求的那一个
+  （有界 LRU，`/status.json` 的 `decodedClips` 可观测）；② 列表对**每个用户文件**做全量
+  sha256 → 现在只对 size 相同的组算 hash（不可能相等的文件一个字节都不读）；
+  ③ 客户端挂载即预取整段视频 → 现在完全不预取。
+- **随机播放**（新）：`randomPlayback` 开关；从所有可播放片段里随机取，
+  **连续两次不会取到同一段**（除非只有一个）；随机与普通播放共用同一个播放路径。
+- **状态不同步**：`selectedClipId` / `previewClipId` / `activePlaybackClipId` 严格区分，
+  片库、设置、播放状态集中在 `ClientStore` 一个快照里。
+- **selection.json**：schema v2（`version/selectedClipId/randomPlayback/fitMode`），
+  只存设置、不存媒体路径；v1 `{id,at}` 自动迁移；文件损坏自动修复并继续，绝不启动失败。
+- **错误边界**：plugin / clip / media / playback / ui 五类，媒体失败不得升级为插件失败。
+- **可扩展性**：新增第 5、第 10 个视频不需要动播放逻辑；身份不再依赖数组下标。
+
+工程与测试：
+
+- 主机半边拆成 9 个模块（`src/host/*.js`，Node 原生 ESM，仍无需编译器）；
+  客户端拆成 5 个模块（`src/client/*.ts`，tsdown 打包）。
+- 构建改为纯 Node（`scripts/build.mjs`），不再要求 bash；新增 `verify:build`
+  逐字节断言 `lib/` 与 `src/` 一致，并检查产物不陈旧。
+- 测试整合进 `npm run check`：`verify:build / routes / selection / cache / blank /
+  boot / preview / playback / random / fallback / install` 共 11 组。
+- `boot.mp4` 保留为向后兼容，但改为 **302** 到具体片段地址，不再承载字节。
+
+### 社区贡献：客户端生命周期修复（@windyduan, PR #2）
 
 **修复：卸载后媒体仍播放、切换后预览仍使用旧片段、当前会话身份在新宿主形状下取不到**
 *Fixed: media surviving unmount, stale preview content after selection changes, and current-session identity resolution on newer host shapes.*

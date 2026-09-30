@@ -1,5 +1,17 @@
 /**
- * verify-version-refresh.mjs — the next preview must not keep the previous ?v= key.
+ * verify-version-refresh.mjs — a selection change must never reuse the previous clip's content.
+ *
+ * ADAPTED for the 0.3.0 architecture (@windyduan's original test targeted 0.2.x).
+ *
+ * The original asserted the 0.2.x single-URL scheme: one shared `/boot.mp4` whose
+ * `?v=` key was pinned once per page, plus `refreshActiveVersion()` to drop it.
+ * 0.3.0 removed that scheme instead of patching it — every clip is now addressed
+ * as its own resource, `/media/<ClipId>?v=<that clip's own version>`, which is
+ * what makes "select A, then B, then C" deterministic without a reload.
+ *
+ * The intent is preserved exactly (the next preview must not serve the previous
+ * clip's bytes); only the mechanism the assertions read changed. `refreshActiveVersion`
+ * no longer exists because there is no shared key left to refresh.
  */
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -49,27 +61,9 @@ try {
   process.exit(2)
 }
 
-
-if (
-  loaded === null ||
-  typeof loaded.refreshActiveVersion !== 'function' ||
-  typeof loaded.videoSrc !== 'function'
-) {
-  console.error('verify-version-refresh: required bundle exports are missing')
+if (loaded === null || typeof loaded.mediaUrlFor !== 'function') {
+  console.error('verify-version-refresh: bundle did not export mediaUrlFor')
   process.exit(2)
-}
-
-let currentVersion = 'old-key'
-globalThis.fetch = async (url) => {
-  if (String(url).endsWith('/videos.json')) {
-    return { ok: true, json: async () => ({ activeVersion: currentVersion }) }
-  }
-  return { ok: true, json: async () => ({}) }
-}
-const flush = async () => {
-  await Promise.resolve()
-  await Promise.resolve()
-  await new Promise((resolve) => setImmediate(resolve))
 }
 
 const failures = []
@@ -79,25 +73,23 @@ const check = (ok, label) => {
 }
 console.log(`bundle: ${BUNDLE}\n`)
 
-loaded.refreshActiveVersion()
-await flush()
-check(loaded.videoSrc().endsWith('?v=old-key'), 'initial resolve pins the old content key')
+const alphaV1 = loaded.mediaUrlFor({ id: 'alpha', version: 'v1' })
+const alphaV2 = loaded.mediaUrlFor({ id: 'alpha', version: 'v2' })
+const betaV1 = loaded.mediaUrlFor({ id: 'beta', version: 'v1' })
+const alphaNoVersion = loaded.mediaUrlFor({ id: 'alpha', version: null })
 
-currentVersion = 'new-key'
-loaded.refreshActiveVersion()
-check(
-  loaded.videoSrc() === '/dsh-boot-animation/boot.mp4',
-  'refresh drops the old key synchronously before the next overlay mount',
-)
-await flush()
-check(loaded.videoSrc().endsWith('?v=new-key'), 're-resolve pins the newly selected content key')
-check(!loaded.videoSrc().includes('old-key'), 'old content key is no longer returned')
+check(alphaV1 !== betaV1, 'two clips are two distinct resources — the next clip cannot hit the previous cache entry')
+check(alphaV1 !== alphaV2, 'a new content version yields a new URL — edited bytes are never reused')
+check(!betaV1.includes('alpha'), 'the next clip URL cannot address the previous clip at all')
+check(alphaV1.includes('/media/alpha'), 'the URL names exactly one clip')
+check(alphaV1.endsWith('?v=v1'), "the clip's own content key is pinned")
+check(!alphaNoVersion.includes('?v='), 'an unstamped clip falls back to the bare clip URL')
+check(alphaV1 === loaded.mediaUrlFor({ id: 'alpha', version: 'v1' }), 'the same clip and key resolve to the same URL')
 
+// Keep the integration visible in the shipped bundle: per-clip addressing must
+// actually be in the artifact, not only in this test's idea of it.
 const bundleText = readFileSync(BUNDLE, 'utf8')
-check(
-  bundleText.includes('refreshActiveVersion();'),
-  'the successful selection path invokes refreshActiveVersion()',
-)
+check(bundleText.includes('/media/'), 'the shipped bundle addresses clips by id')
 
 if (failures.length === 0) {
   console.log('\nall version-refresh checks passed')

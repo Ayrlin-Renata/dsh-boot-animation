@@ -1,6 +1,6 @@
 {
   "name": "dsh-boot-animation",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "打开新对话（或你钉住的会话）时，铺满窗口播放一段片头开机动画。Open a new (or a pinned) DSH conversation and a full-frame intro animation plays.",
   "type": "module",
   "main": "./lib/index.js",
@@ -11,6 +11,7 @@
     "README.md",
     "README.en.md",
     "CHANGELOG.md",
+    "ARCHITECTURE.md",
     "LICENSE"
   ],
   "license": "BSD-3-Clause",
@@ -49,11 +50,19 @@
     "typescript": "^5.9.0"
   },
   "scripts": {
-    "build": "bash scripts/build.sh",
+    "build": "node scripts/build.mjs",
     "build:client": "node scripts/check-css-template.mjs && tsdown",
     "embed-clips": "node scripts/embed-clips.mjs",
-    "check": "node scripts/check-css-template.mjs && node scripts/verify-routes.mjs && node scripts/verify-blank.mjs && node scripts/verify-client-boot.mjs && node scripts/verify-teardown.mjs && node scripts/verify-version-refresh.mjs && node scripts/verify-session-id.mjs",
+      "check": "npm run verify:build && npm run verify:routes && npm run verify:selection && npm run verify:cache && npm run verify:blank && npm run verify:boot && npm run verify:preview && npm run verify:playback && npm run verify:random && npm run verify:fallback && npm run verify:install && npm run verify:teardown && npm run verify:version-refresh && npm run verify:session-id",
+      "verify:build": "node scripts/check-css-template.mjs && node scripts/verify-build.mjs",
     "verify:routes": "node scripts/verify-routes.mjs",
+    "verify:selection": "node scripts/verify-selection.mjs",
+    "verify:preview": "node scripts/verify-preview.mjs",
+    "verify:playback": "node scripts/verify-playback.mjs",
+    "verify:random": "node scripts/verify-random.mjs",
+    "verify:cache": "node scripts/verify-cache.mjs",
+    "verify:fallback": "node scripts/verify-fallback.mjs",
+    "verify:install": "node scripts/verify-install.mjs",
     "verify:blank": "node scripts/verify-blank.mjs",
     "verify:boot": "node scripts/verify-client-boot.mjs",
     "verify:letterbox": "node scripts/verify-letterbox.mjs",
